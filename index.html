@@ -64,8 +64,13 @@ video{width:100%;height:100%;object-fit:fill;display:block;transform-origin:50% 
   padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 .viewer.open{display:flex}
 .viewer .pane{flex:1;min-height:0;overflow:auto;display:flex}
-.viewer img{margin:auto;max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-in}
-.viewer.actual img{max-width:none;max-height:none;cursor:zoom-out}
+.viewer .frame{position:relative;margin:auto;flex:none}
+.viewer .frame img{display:block;width:100%;height:100%;cursor:zoom-in}
+.viewer.actual .frame img{cursor:zoom-out}
+.viewer .frame svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+.viewer .frame polygon{fill:none;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+.viewer .frame .halo{stroke:rgba(0,0,0,.6);stroke-width:6}
+.viewer .frame .line{stroke:var(--cropline,var(--move));stroke-width:3}
 .viewer .bar{display:flex;gap:8px;padding:12px;background:var(--bg)}
 .viewer .bar button{flex:1}
 .viewer .meta{padding:8px 12px 0;background:var(--bg);color:var(--muted);font-size:.9rem}
@@ -77,7 +82,16 @@ video{width:100%;height:100%;object-fit:fill;display:block;transform-origin:50% 
 .flash.go{animation:flash .35s ease-out}
 @keyframes flash{from{opacity:.85}to{opacity:0}}
 .thumb{position:absolute;right:10px;bottom:16px;width:68px;height:68px;border-radius:10px;object-fit:cover;
-  border:3px solid var(--surface);display:none;padding:0;cursor:zoom-in}
+  border:3px solid var(--surface);display:none;padding:0;cursor:zoom-in;background:var(--viewfinder)}
+.thumb[data-crop="ok"]{object-fit:contain;border-color:var(--shot)}
+.thumb[data-crop="check"]{object-fit:contain;border-color:var(--settle)}
+.thumb[data-crop="none"]{border-color:var(--move)}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.field .seg label{display:block;margin:0;position:relative}
+.seg input{position:absolute;opacity:0;width:1px;height:1px}
+.seg span{display:block;text-align:center;padding:12px 6px;border:1px solid var(--line);border-radius:10px;font-weight:500}
+.seg input:checked+span{background:var(--btn);color:var(--btn-ink);border-color:var(--btn)}
+.seg input:focus-visible+span{outline:3px solid var(--settle);outline-offset:2px}
 
 .intro{position:absolute;inset:0;background:var(--surface);color:var(--ink);display:flex;flex-direction:column;
   justify-content:center;padding:28px 24px;gap:14px;overflow:auto}
@@ -182,6 +196,8 @@ input[type=range]{width:100%;accent-color:var(--settle)}
   <small style="display:block;color:var(--muted);margin:-6px 0 10px 32px;line-height:1.4">When off, photos come from the lower-resolution preview. When on, a failed capture saves nothing and asks for a retry.</small>
   <label class="check"><input type="checkbox" id="sound"> Beep on each capture</label>
   <label class="check"><input type="checkbox" id="guideChk"> Show centering guide</label>
+  <label class="check"><input type="checkbox" id="detectChk"> Find each print’s edges after capture</label>
+  <small style="display:block;color:var(--muted);margin:-6px 0 10px 32px;line-height:1.4">Runs in the background without slowing the camera, and alerts you if a print can’t be found, while it’s still in place.</small>
   <div class="readout">
     <span>Movement now</span><span id="rMotion">–</span>
     <span>Difference from last photo</span><span id="rChange">–</span>
@@ -193,6 +209,15 @@ input[type=range]{width:100%;accent-color:var(--settle)}
 <section class="sheet" id="saveSheet" aria-label="Save photos">
   <h2>Save photos</h2>
   <p id="saveInfo"></p>
+  <div class="field">
+    <label>Include in the zip</label>
+    <div class="seg" role="radiogroup" aria-label="Include in the zip">
+      <label><input type="radio" name="exportMode" value="both"><span>Both</span></label>
+      <label><input type="radio" name="exportMode" value="cropped"><span>Cropped</span></label>
+      <label><input type="radio" name="exportMode" value="originals"><span>Originals</span></label>
+    </div>
+    <small id="modeHelp"></small>
+  </div>
   <button class="primary" id="exportBtn">Save next batch</button>
   <p id="savedInfo" style="margin-top:18px"></p>
   <div class="row">
@@ -202,7 +227,15 @@ input[type=range]{width:100%;accent-color:var(--settle)}
 </section>
 
 <div class="viewer" id="viewer" aria-label="Last captured photo">
-  <div class="pane" id="viewerPane"><img id="viewerImg" alt="Last captured photo"></div>
+  <div class="pane" id="viewerPane">
+    <div class="frame" id="viewerFrame">
+      <img id="viewerImg" alt="Last captured photo">
+      <svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+        <polygon class="halo" id="viewerHalo" points=""></polygon>
+        <polygon class="line" id="viewerPoly" points=""></polygon>
+      </svg>
+    </div>
+  </div>
   <div class="meta" id="viewerMeta">Tap the photo to switch between fit and full size.</div>
   <div class="bar">
     <button id="viewerDelete" class="danger">Delete this photo</button>
@@ -220,7 +253,7 @@ const A_W = 80, A_H = 60, MOVE = 4, STILL = 2, TICK = 100;
 const acan = document.createElement('canvas'); acan.width = A_W; acan.height = A_H;
 const actx = acan.getContext('2d', { willReadFrequently: true });
 
-const defaults = { sens: 6, settle: 1.0, fullRes: true, sound: true, batch: 25, zoom: 1, guide: true };
+const defaults = { sens: 6, settle: 1.0, fullRes: true, sound: true, batch: 25, zoom: 1, guide: true, detectEdges: true, exportMode: 'both' };
 let cfg = { ...defaults };
 try { cfg = { ...defaults, ...JSON.parse(localStorage.getItem('scanner-cfg') || '{}') }; } catch (e) {}
 const saveCfg = () => { try { localStorage.setItem('scanner-cfg', JSON.stringify(cfg)); } catch (e) {} };
@@ -228,7 +261,7 @@ const needed = () => 22 - cfg.sens * 2; // sens 1 → 20, sens 10 → 2
 
 let stream = null, track = null, imageCapture = null, timer = null, wakeLock = null, audio = null;
 let running = false, busy = false, phase = 'idle', prev = null, ref = null, stillSince = 0, thumbUrl = null;
-let viewerOpen = false, lastId = null;
+let viewerOpen = false, lastId = null, lastCrop = null, cropThumbUrl = null;
 
 /* The capture region: the centre 1/zoom of the camera frame, in the given dimensions. */
 function region(w, h) { const z = cfg.zoom || 1, sw = w / z, sh = h / z; return { sx: (w - sw) / 2, sy: (h - sh) / 2, sw, sh }; }
@@ -273,10 +306,91 @@ async function addPhoto(blob) {
 }
 async function listPhotos() { const d = await S(); return d ? req(store(d, 'readonly').getAll()) : mem.rows.slice(); }
 async function putPhoto(p) { const d = await S(); if (d) return req(store(d, 'readwrite').put(p)); }
+async function getPhoto(id) {
+  const d = await S();
+  if (!d) return mem.rows.find(r => r.id === id) || null;
+  return (await req(store(d, 'readonly').get(id))) || null;
+}
+/* Merge fields into a stored photo, re-reading it first so nothing else gets overwritten. */
+async function updatePhoto(id, fields) {
+  const row = await getPhoto(id); if (!row) return null;
+  Object.assign(row, fields); await putPhoto(row); return row;
+}
 async function delPhoto(id) {
   const d = await S();
   if (!d) { mem.rows = mem.rows.filter(r => r.id !== id); return; }
   return req(store(d, 'readwrite').delete(id));
+}
+
+/* ---------- edge detection (runs in a background worker; see detect.js) ---------- */
+let detWorker = null, detSeq = 0;
+const detPending = new Map();
+function loadDetectScript() {
+  return window.PrintDetect ? Promise.resolve() : new Promise((res, rej) => {
+    const sc = document.createElement('script'); sc.src = 'detect.js'; sc.onload = res;
+    sc.onerror = () => rej(new Error('the edge detector didn’t load')); document.head.appendChild(sc);
+  });
+}
+async function detectOnMainThread(op, data) {
+  await loadDetectScript();
+  return op === 'crop' ? PrintDetect.cropFull(data.blob, data.corners, data.trim) : PrintDetect.analyze(data.blob);
+}
+function detector(op, data) {
+  if (detWorker === null) {
+    try {
+      detWorker = new Worker('detect.js');
+      detWorker.onmessage = e => {
+        const p = detPending.get(e.data.id); if (!p) return;
+        detPending.delete(e.data.id);
+        e.data.ok ? p.res(e.data.out) : p.rej(new Error(e.data.error));
+      };
+      detWorker.onerror = () => {   // worker couldn't start: finish queued jobs on the page instead
+        detWorker = false;
+        for (const [id, p] of detPending) { detPending.delete(id); detectOnMainThread(p.op, p.data).then(p.res, p.rej); }
+      };
+    } catch (e) { detWorker = false; }
+  }
+  if (!detWorker) return detectOnMainThread(op, data);
+  return new Promise((res, rej) => {
+    const id = ++detSeq; detPending.set(id, { res, rej, op, data });
+    detWorker.postMessage({ id, op, ...data });
+  });
+}
+async function findEdges(id, blob) {
+  let crop, thumb = null;
+  try {
+    const r = await detector('analyze', { blob });
+    crop = { status: r.status, note: r.note, corners: r.corners || null };
+    thumb = r.thumb || null;
+  } catch (e) {
+    crop = { status: 'none', note: `edge detection failed (${(e && e.message) || e})`, corners: null };
+  }
+  const row = await updatePhoto(id, { crop, cropThumb: thumb });
+  return row ? { crop, thumb } : null;   // null: the photo was deleted meanwhile
+}
+/* Background step after each capture. Never blocks the camera. */
+async function findEdgesAfterCapture(id, blob) {
+  const r = await findEdges(id, blob);
+  if (!r || id !== lastId) return;
+  setThumbCrop(r.crop, r.thumb);
+  if (viewerOpen) drawOutline();
+  if (r.crop.status !== 'ok') cropAlert(id, r.crop);
+}
+function cropAlert(id, crop) {
+  if (navigator.vibrate) try { navigator.vibrate([90, 70, 90, 70, 90]); } catch (e) {}
+  if (audio) {
+    try {
+      [0, 0.16].forEach((t, i) => {
+        const o = audio.createOscillator(), g = audio.createGain(), at = audio.currentTime + t;
+        o.type = 'triangle'; o.frequency.value = i ? 440 : 660;
+        g.gain.setValueAtTime(0.18, at); g.gain.exponentialRampToValueAtTime(0.001, at + 0.13);
+        o.connect(g).connect(audio.destination); o.start(at); o.stop(at + 0.14);
+      });
+    } catch (e) {}
+  }
+  toast(crop.status === 'check'
+    ? `Photo ${id}: the print touches the frame edge, so a corner may be cut off. To retake: Undo, adjust, Snap.`
+    : `Photo ${id}: couldn’t find the print’s edges (${crop.note}). The photo is saved. To retake: Undo, adjust, Snap.`, 6500);
 }
 
 /* ---------- UI helpers ---------- */
@@ -303,11 +417,22 @@ async function refreshCounts() {
   $('#clearBtn').disabled = saved === 0;
   return all;
 }
-function showThumb(blob, id) {
+/* thumbUrl: the full photo (used by the viewer). The thumbnail shows the crop once it's known. */
+function showThumb(blob, id, crop, cropThumb) {
   if (id != null) lastId = id;
   if (thumbUrl) URL.revokeObjectURL(thumbUrl);
-  thumbUrl = URL.createObjectURL(blob); const t = $('#thumb'); t.src = thumbUrl; t.style.display = 'block';
+  thumbUrl = URL.createObjectURL(blob);
+  const t = $('#thumb'); t.style.display = 'block';
+  setThumbCrop(crop || null, cropThumb || null);
 }
+function setThumbCrop(crop, cropThumb) {
+  lastCrop = crop;
+  if (cropThumbUrl) { URL.revokeObjectURL(cropThumbUrl); cropThumbUrl = null; }
+  const t = $('#thumb');
+  if (cropThumb) { cropThumbUrl = URL.createObjectURL(cropThumb); t.src = cropThumbUrl; } else t.src = thumbUrl;
+  t.dataset.crop = crop ? crop.status : (cfg.detectEdges ? 'pending' : 'off');
+}
+function showRow(r) { showThumb(r.blob, r.id, r.crop, r.cropThumb); }
 function feedback() {
   const f = $('#flash'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go');
   if (navigator.vibrate) try { navigator.vibrate(40); } catch (e) {}
@@ -446,7 +571,9 @@ async function capture(g) {
     if (!blob) throw new Error('no image was produced');
     const id = await addPhoto(blob);
     ref = g || sample();
-    feedback(); showThumb(blob, id); await refreshCounts();
+    feedback(); showThumb(blob, id);
+    if (cfg.detectEdges) findEdgesAfterCapture(id, blob);   // not awaited: the camera carries on
+    await refreshCounts();
   } catch (e) {
     failed = true;
     failFeedback();
@@ -511,20 +638,43 @@ async function saveFile(name, blob) {
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   return true;
 }
+const csvCell = v => /[",\r\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
 async function exportNext() {
   const btn = $('#exportBtn'); btn.disabled = true; btn.textContent = 'Preparing…'; busy = true;
   try {
+    const mode = cfg.exportMode;
     const all = await listPhotos(); const batch = all.filter(p => !p.exported).sort((a, b) => a.id - b.id).slice(0, cfg.batch);
     if (!batch.length) return;
-    const blob = await makeZip(batch.map(p => ({ name: `photo_${pad(p.id)}.jpg`, blob: p.blob })),
-      (i, n) => { btn.textContent = `Preparing ${i} of ${n}…`; });
+    const originals = [], cropped = [], review = [], report = [['file', 'crop', 'note']];
+    for (let i = 0; i < batch.length; i++) {
+      const p = batch[i], name = `photo_${pad(p.id)}.jpg`;
+      btn.textContent = `${mode === 'originals' ? 'Preparing' : 'Cropping'} ${i + 1} of ${batch.length}…`;
+      if (mode !== 'originals') {
+        let crop = p.crop;
+        if (!crop) crop = (await findEdges(p.id, p.blob) || {}).crop || { status: 'none', note: 'not found', corners: null };
+        let out = null;
+        if (crop.corners) {
+          try { out = await detector('crop', { blob: p.blob, corners: crop.corners, trim: 0.01 }); }
+          catch (e) { crop = { ...crop, status: 'none', note: `crop failed (${e.message})` }; }
+        }
+        report.push([name, out ? crop.status : 'none', crop.note]);
+        if (out) cropped.push({ name: `cropped/${name}`, blob: out });
+        else if (mode === 'cropped') review.push({ name: `needs_review/${name}`, blob: p.blob });
+      }
+      if (mode !== 'cropped') originals.push({ name: mode === 'originals' ? name : `originals/${name}`, blob: p.blob });
+    }
+    const files = [...originals, ...cropped, ...review];
+    if (mode !== 'originals') files.push({ name: 'crop_report.csv', blob: new Blob([report.map(r => r.map(csvCell).join(',')).join('\r\n')], { type: 'text/csv' }) });
+    const blob = await makeZip(files, (i, n) => { btn.textContent = `Zipping ${i} of ${n}…`; });
     btn.textContent = 'Waiting for save…';
     const name = `photos_${pad(batch[0].id)}-${pad(batch[batch.length - 1].id)}.zip`;
     if (await saveFile(name, blob)) {
-      for (const p of batch) { p.exported = true; await putPhoto(p); }
-      toast(`Saved ${batch.length} photo${batch.length === 1 ? '' : 's'}.`);
+      for (const p of batch) await updatePhoto(p.id, { exported: true });
+      const flagged = report.slice(1).filter(r => r[1] !== 'ok').length;
+      toast(`Saved ${batch.length} photo${batch.length === 1 ? '' : 's'}.` +
+        (mode !== 'originals' && flagged ? ` ${flagged} need a look; see crop_report.csv.` : ''), flagged ? 5000 : 2600);
     }
-  } catch (e) { toast('Couldn’t build the zip file.'); }
+  } catch (e) { toast(`Couldn’t build the zip file (${(e && e.message) || e}).`, 5000); }
   finally { busy = false; prev = null; btn.textContent = 'Save next batch'; await refreshCounts(); }
 }
 let clearArmed = false, clearT;
@@ -556,7 +706,7 @@ $('#undoBtn').addEventListener('click', async () => {
   const last = all.reduce((a, b) => (b.id > a.id ? b : a));
   await delPhoto(last.id); toast(`Removed photo ${last.id}.`);
   const rest = all.filter(p => p.id !== last.id);
-  if (rest.length) { const r = rest.reduce((a, b) => (b.id > a.id ? b : a)); showThumb(r.blob, r.id); } else { $('#thumb').style.display = 'none'; lastId = null; }
+  if (rest.length) showRow(rest.reduce((a, b) => (b.id > a.id ? b : a))); else { $('#thumb').style.display = 'none'; lastId = null; lastCrop = null; }
   await refreshCounts();
 });
 
@@ -576,6 +726,16 @@ function syncInputs() {
   settle.value = cfg.settle; $('#settleOut').textContent = Number(cfg.settle).toFixed(1) + ' s';
   $('#fullRes').checked = cfg.fullRes; $('#sound').checked = cfg.sound; $('#batch').value = String(cfg.batch);
   $('#guideChk').checked = cfg.guide; $('#guide').classList.toggle('on', cfg.guide);
+  $('#detectChk').checked = cfg.detectEdges;
+  document.querySelectorAll('input[name=exportMode]').forEach(r => { r.checked = r.value === cfg.exportMode; });
+  modeHelp();
+}
+function modeHelp() {
+  $('#modeHelp').textContent = {
+    both: 'Each zip has an originals folder and a cropped folder, plus crop_report.csv.',
+    cropped: 'Cropped photos only. Any print whose edges weren’t found goes in needs_review as the original, so nothing is lost.',
+    originals: 'Uncropped photos only, the same as before.'
+  }[cfg.exportMode];
 }
 sens.addEventListener('input', () => { cfg.sens = +sens.value; $('#sensOut').textContent = cfg.sens; saveCfg(); });
 settle.addEventListener('input', () => { cfg.settle = +settle.value; $('#settleOut').textContent = cfg.settle.toFixed(1) + ' s'; saveCfg(); });
@@ -584,21 +744,46 @@ $('#sound').addEventListener('change', e => { cfg.sound = e.target.checked; save
 $('#batch').addEventListener('change', e => { cfg.batch = +e.target.value; saveCfg(); refreshCounts(); });
 document.querySelectorAll('#zoombar button').forEach(b => b.addEventListener('click', () => setZoom(+b.dataset.z)));
 $('#guideChk').addEventListener('change', e => { cfg.guide = e.target.checked; saveCfg(); $('#guide').classList.toggle('on', cfg.guide); });
+$('#detectChk').addEventListener('change', e => { cfg.detectEdges = e.target.checked; saveCfg(); });
+document.querySelectorAll('input[name=exportMode]').forEach(r => r.addEventListener('change', () => { cfg.exportMode = r.value; saveCfg(); modeHelp(); }));
 
 /* Full-size viewer for the last capture */
+function sizeViewer() {
+  const img = $('#viewerImg'), fr = $('#viewerFrame'), pane = $('#viewerPane');
+  const nw = img.naturalWidth, nh = img.naturalHeight; if (!nw) return;
+  const s = $('#viewer').classList.contains('actual') ? 1 : Math.min(pane.clientWidth / nw, pane.clientHeight / nh, 1);
+  fr.style.width = Math.round(nw * s) + 'px'; fr.style.height = Math.round(nh * s) + 'px';
+}
+function drawOutline() {
+  const img = $('#viewerImg'), c = lastCrop && lastCrop.corners;
+  const pts = c ? c.map(p => `${p[0]},${p[1]}`).join(' ') : '';
+  $('#viewerPoly').setAttribute('points', pts); $('#viewerHalo').setAttribute('points', pts);
+  const st = lastCrop ? lastCrop.status : (cfg.detectEdges ? 'pending' : 'off');
+  $('#viewerFrame').style.setProperty('--cropline', st === 'ok' ? 'var(--shot)' : st === 'check' ? 'var(--settle)' : 'var(--move)');
+  const crop = {
+    ok: 'Edges found: the green outline is the crop.',
+    check: 'The print touches the frame edge, so a corner may be cut off.',
+    none: `Edges not found${lastCrop && lastCrop.note ? ` (${lastCrop.note})` : ''}. The original is kept.`,
+    pending: 'Finding edges…', off: ''
+  }[st];
+  $('#viewerMeta').textContent = `Photo ${lastId ?? ''}, ${img.naturalWidth || '?'} × ${img.naturalHeight || '?'}. ${crop} Tap the photo to switch between fit and full size.`;
+}
 function openViewer() {
   if (!thumbUrl) return;
-  const img = $('#viewerImg'); img.src = thumbUrl;
-  img.onload = () => { $('#viewerMeta').textContent = `Photo ${lastId ?? ''}, ${img.naturalWidth} × ${img.naturalHeight}. Tap it to switch between fit and full size.`; };
+  const img = $('#viewerImg');
+  img.onload = () => { sizeViewer(); drawOutline(); };
+  img.src = thumbUrl;
   $('#viewer').classList.remove('actual'); $('#viewer').classList.add('open'); viewerOpen = true;
+  sizeViewer(); drawOutline();
 }
 function closeViewer() { $('#viewer').classList.remove('open'); viewerOpen = false; prev = null; }
+window.addEventListener('resize', () => { if (viewerOpen) sizeViewer(); });
 $('#thumb').addEventListener('click', openViewer);
 $('#thumb').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openViewer(); } });
 $('#viewerImg').addEventListener('click', e => {
   const v = $('#viewer'), pane = $('#viewerPane'), img = e.target;
   const fx = e.offsetX / img.clientWidth, fy = e.offsetY / img.clientHeight;
-  v.classList.toggle('actual');
+  v.classList.toggle('actual'); sizeViewer();
   if (v.classList.contains('actual')) { pane.scrollLeft = fx * img.naturalWidth - pane.clientWidth / 2; pane.scrollTop = fy * img.naturalHeight - pane.clientHeight / 2; }
 });
 $('#viewerClose').addEventListener('click', closeViewer);
@@ -613,7 +798,7 @@ if ('serviceWorker' in navigator) {
 if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(() => {}); }
 
 refreshCounts().then(async all => {
-  if (all.length) { const r = all.reduce((a, b) => (b.id > a.id ? b : a)); showThumb(r.blob, r.id); }
+  if (all.length) showRow(all.reduce((a, b) => (b.id > a.id ? b : a)));
 }).catch(() => {});
 })();
 </script>

@@ -4,7 +4,8 @@ Auto-captures printed photos with a phone on a stand: lay a print down, move you
 
 ## Files
 
-- `index.html`: the whole app (camera, change detection, zoom, preview, zip export)
+- `index.html`: the app (camera, change detection, zoom, preview, zip export)
+- `detect.js`: finds each print's edges in a background worker, and makes the cropped copies at export
 - `manifest.webmanifest`: app name, icon and full-screen settings for installing
 - `sw.js`: service worker that lets the app open offline
 - `icons/`: app icons
@@ -23,6 +24,18 @@ Open that address in Chrome, allow the camera, then tap the three-dot menu and c
 ## Updating
 
 Edit the files and push them, then change `VERSION` in `sw.js` (v1 to v2, and so on). The installed app picks up the new version on the next launch or the one after.
+
+## Cropping
+
+After each capture, `detect.js` looks for the print's edges in the background (about a fifth of a second) without slowing the camera. The thumbnail then shows the straightened crop, with a green border when it's found, amber when the print touches the frame edge, and red when it isn't found. Amber and red also give a triple buzz, two falling tones and a message, while the print is still in place: to retake, tap Undo, adjust the print, and tap Snap. Tap the thumbnail to see the full photo with the crop outlined.
+
+Only the four corners are stored with each photo; the original is never changed. Save offers three choices:
+
+- Both: `originals/` and `cropped/` folders plus `crop_report.csv`
+- Cropped: `cropped/`, with any print that couldn't be found in `needs_review/` as the original, so nothing is lost
+- Originals: uncropped photos only
+
+Photos captured before cropping existed, or with it turned off in Settings, get their edges found when they're saved.
 
 ## Notes
 

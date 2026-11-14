@@ -1,8 +1,8 @@
 // Photo Scanner service worker: keeps the app working offline.
 // Bump VERSION whenever you change index.html (or any file below) so phones pick up the update.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `photo-scanner-${VERSION}`;
-const SHELL = ['./', './index.html', './manifest.webmanifest',
+const SHELL = ['./', './index.html', './detect.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'];
 
 self.addEventListener('install', e => {
